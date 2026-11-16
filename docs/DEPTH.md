@@ -1,6 +1,6 @@
 # 深度登记 fieldmap
 
-- 规模：中型（7 个功能模块，76 个文件，65 条测试）
+- 规模：中型（8 个功能模块，87 个文件，95 条测试）
 - 核心规则：字段身份只认 `field_id`；类型兼容按 Decimal 值域 / 刻度 / 精确整数三件套判定；影响面 = 引用身份解析后的反向闭包
 - 使用者与工作流：湖仓数据管理员拿到上游新版元数据后，判定 60 个下游视图/任务是否还能跑，并出一份带条款号的迁移单
 
@@ -15,6 +15,7 @@
 | M5 影响面 | 看受影响的下游节点、环、断链、单边登记 | GET /api/impact | `app/modules/m5_impact/handler.py` `app/modules/m5_impact/service.py` `app/modules/m5_impact/closure.py` `app/modules/m5_impact/cycle.py` `app/modules/m5_impact/broken.py` | `tests/test_m5_impact.py` |
 | M6 版本批次 | 跑批次、看历史、验陈旧拒绝与区间重叠 | POST /api/runs | `app/modules/m6_batches/handler.py` `app/modules/m6_batches/service.py` `app/modules/m6_batches/window.py` `app/modules/m6_batches/guard.py` `app/modules/m6_batches/history.py` | `tests/test_m6_batches.py` |
 | M7 迁移单 | 出带条款号的迁移单与三份账目 CSV | GET /api/export/spec.md | `app/modules/m7_migration/handler.py` `app/modules/m7_migration/service.py` `app/modules/m7_migration/spec_md.py` `app/modules/m7_migration/csv_out.py` `app/modules/m7_migration/ledger.py` | `tests/test_m7_migration.py` |
+| M8 版本处置 | 判定版本归档或保留、跑幂等清理、恢复归档 | POST /api/retention/cleanup | `app/modules/m8_retention/handler.py` `app/modules/m8_retention/service.py` `app/modules/m8_retention/policy.py` | `tests/test_m8_retention.py` |
 
 ## 陷阱登记
 
@@ -30,6 +31,9 @@
 | TRAP-22 | 同一字段被连续改过两次名 | 只认最近一跳，最早的名字解析不到 | 跨版本改名链一路解析到底 | `app/modules/m4_mapping/rename.py` | `tests/test_m4_mapping.py::test_trap22_alias_chain_resolves_multi_hop` |
 | TRAP-25 | 两个版本生效区间重叠 | 取到哪版看运气 | 半开区间比较，重叠直接标记警告 | `app/modules/m6_batches/window.py` | `tests/test_m6_batches.py::test_trap25_overlap_flagged_but_adjacent_clean` |
 | TRAP-26 | 基于旧版本号提交 | 后提交无条件覆盖新结果 | 版本号乐观锁，基线落后即 409 | `app/modules/m6_batches/guard.py` | `tests/test_m6_batches.py::test_trap26_stale_submission_rejected` |
+| TRAP-27 | 容量告急时清掉仍被断链引用的版本 | 回放失去依据，下游迁移无法对账 | 保留判定优先于容量，pressure 只记录不放宽 | `app/modules/m8_retention/policy.py` | `tests/test_m8_retention.py::test_pressure_never_relaxes_retention` |
+| TRAP-28 | 同一清理重跑 | 处置记录翻倍，审计对不上 | 覆盖判定命中即复用，不新增处置记录 | `app/modules/m8_retention/service.py` | `tests/test_m8_retention.py::test_cleanup_rerun_adds_no_records` |
+| TRAP-29 | 归档中途失败 | 留下半归档状态，版本表与归档表对不上 | 归档、记处置、移出版本表一个事务，失败整体回滚可重试 | `app/store.py` | `tests/test_m8_retention.py::test_failed_archive_rolls_back` |
 
 ## 对账规则
 
@@ -37,6 +41,7 @@
 - 字段账：新版本 = 未变 + 改名 + 换类型 + 改必填 + 冲突 + 新增
 - 引用账：登记引用 = 可达 + 断链，其中可达 = 直接 + 经别名
 - 采信账：列定义行 = 接受字段 + 阻断行
+- 处置账：在册版本 = 保留 + 可归档；可释放字节 = 可归档版本字节和
 - 页面上四账并列显示，差额不为 0 即判不平
 
 ## 已知不覆盖

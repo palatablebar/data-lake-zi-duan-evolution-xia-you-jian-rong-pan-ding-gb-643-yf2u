@@ -31,6 +31,19 @@ const ACTIONS = {
     }
     return `比较完成 ${result.change}`;
   },
+
+  async cleanup() {
+    const result = await request('/api/retention/cleanup', {});
+    if (result.reused) {
+      return `命中已有清理 ${result.cleanup_key.slice(0, 8)}…，未新增处置记录`;
+    }
+    return `归档 ${result.archived.length} 个版本，保留 ${result.retained.length} 个，释放 ${result.freed_bytes} 字节`;
+  },
+
+  async restore(button) {
+    const result = await request('/api/retention/restore', { run_id: button.dataset.runId });
+    return `已恢复 ${result.run_id}（序号 ${result.version_seq}）`;
+  },
 };
 
 async function request(url, body) {
@@ -72,7 +85,7 @@ document.addEventListener('click', async (event) => {
   try {
     const message = await handler(button);
     flash(target, message || '完成', false);
-    if (name === 'run') {
+    if (name === 'run' || name === 'cleanup' || name === 'restore') {
       setTimeout(() => window.location.reload(), 400);
     }
   } catch (error) {

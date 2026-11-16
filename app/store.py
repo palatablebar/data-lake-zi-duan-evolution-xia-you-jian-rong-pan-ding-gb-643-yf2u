@@ -56,7 +56,28 @@ CREATE TABLE IF NOT EXISTS kv (
     k TEXT PRIMARY KEY,
     v TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS archives (
+    run_id       TEXT PRIMARY KEY,
+    cleanup_key  TEXT NOT NULL,
+    version_seq  INTEGER NOT NULL,
+    size_bytes   INTEGER NOT NULL,
+    archived_at  TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS disposals (
+    disposal_id  TEXT PRIMARY KEY,
+    cleanup_key  TEXT NOT NULL,
+    attempt      INTEGER NOT NULL,
+    run_id       TEXT NOT NULL,
+    version_seq  INTEGER NOT NULL,
+    action       TEXT NOT NULL,
+    reasons_json TEXT NOT NULL,
+    size_bytes   INTEGER NOT NULL,
+    created_at   TEXT NOT NULL,
+    restored_at  TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_quarantine_schema ON quarantine(schema_id);
+CREATE INDEX IF NOT EXISTS idx_disposals_cleanup ON disposals(cleanup_key);
 """
 
 
@@ -83,7 +104,7 @@ def reset() -> None:
     """测试与重建用：清空全部业务表。"""
     with _LOCK, _connect() as conn:
         conn.executescript(SCHEMA)
-        for table in ("snapshots", "runs", "quarantine", "kv"):
+        for table in ("snapshots", "runs", "quarantine", "kv", "archives", "disposals"):
             conn.execute(f"DELETE FROM {table}")
 
 
@@ -272,3 +293,169 @@ def get_kv(key: str, default=None):
     with _LOCK, _connect() as conn:
         row = conn.execute("SELECT v FROM kv WHERE k=?", (key,)).fetchone()
     return _loads(row["v"]) if row else default
+
+
+# ---------- 版本处置（归档 / 保留） ----------
+
+class ArchiveFailed(Exception):
+    """归档事务内部的失败：连接已回滚，活动表保持原样。"""
+
+
+def list_runs_full() -> list[dict]:
+    """全部批次的完整负载与占用字节，按版本序号升序。"""
+    with _LOCK, _connect() as conn:
+        rows = conn.execute(
+            """SELECT payload_json, LENGTH(payload_json) AS size_bytes
+               FROM runs ORDER BY version_seq, run_id"""
+        ).fetchall()
+    return [
+        {"run": _loads(row["payload_json"]), "size_bytes": int(row["size_bytes"])}
+        for row in rows
+    ]
+
+
+def execute_cleanup_tx(cleanup_key: str, attempt: int, items: list[dict],
+                       created_at: str) -> None:
+    """一次清理一个事务：归档负载 → 记处置 → 移出版本表。
+
+    任一步失败整体回滚，runs 表保持原样，重试不会留下半归档状态。
+    items 里 action=archived 的才动 runs；retained 只落处置记录。
+    """
+    archived = [item for item in items if item["action"] == "archived"]
+    with _LOCK, _connect() as conn:
+        for item in archived:
+            row = conn.execute(
+                "SELECT payload_json FROM runs WHERE run_id=?", (item["run_id"],)
+            ).fetchone()
+            if row is None:
+                raise ArchiveFailed(f"批次 {item['run_id']} 在清理期间被改动")
+            conn.execute(
+                """INSERT INTO archives (run_id, cleanup_key, version_seq, size_bytes,
+                       archived_at, payload_json) VALUES (?,?,?,?,?,?)""",
+                (item["run_id"], cleanup_key, int(item["version_seq"]),
+                 int(item["size_bytes"]), created_at, row["payload_json"]),
+            )
+        for item in items:
+            conn.execute(
+                """INSERT INTO disposals (disposal_id, cleanup_key, attempt, run_id,
+                       version_seq, action, reasons_json, size_bytes, created_at,
+                       restored_at) VALUES (?,?,?,?,?,?,?,?,?,NULL)""",
+                (item["disposal_id"], cleanup_key, int(attempt), item["run_id"],
+                 int(item["version_seq"]), item["action"], _dumps(item["reasons"]),
+                 int(item["size_bytes"]), created_at),
+            )
+        for item in archived:
+            conn.execute("DELETE FROM runs WHERE run_id=?", (item["run_id"],))
+
+
+def restore_run_tx(run_id: str, restored_at: str) -> dict | None:
+    """把归档批次原样写回版本表，并销掉对应处置的 restored_at。
+
+    与归档同一事务语义：写回、删归档、销记录要么全成要么全不成。
+    """
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM archives WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        payload = _loads(row["payload_json"])
+        conn.execute(
+            """INSERT INTO runs (run_id, batch_key, old_schema_id, new_schema_id,
+                   version_seq, input_sha256, ruleset, created_at, effective_from,
+                   effective_to, summary_json, payload_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                payload["run_id"], payload["batch_key"], payload["old_schema_id"],
+                payload["new_schema_id"], int(payload["version_seq"]),
+                payload["input_sha256"], payload["ruleset"], payload["created_at"],
+                payload["effective_from"], payload["effective_to"],
+                _dumps(payload["summary"]), row["payload_json"],
+            ),
+        )
+        conn.execute("DELETE FROM archives WHERE run_id=?", (run_id,))
+        conn.execute(
+            """UPDATE disposals SET restored_at=?
+               WHERE run_id=? AND action='archived' AND restored_at IS NULL""",
+            (restored_at, run_id),
+        )
+    return payload
+
+
+def max_attempt(cleanup_key: str) -> int:
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(attempt), 0) AS n FROM disposals WHERE cleanup_key=?",
+            (cleanup_key,),
+        ).fetchone()
+    return int(row["n"])
+
+
+def latest_disposals_by_run() -> dict:
+    """每个批次最新一条处置记录，用于判断同一清理重跑。"""
+    with _LOCK, _connect() as conn:
+        rows = conn.execute(
+            """SELECT disposal_id, cleanup_key, attempt, run_id, version_seq, action,
+                      reasons_json, size_bytes, created_at, restored_at
+               FROM disposals ORDER BY created_at, attempt, disposal_id"""
+        ).fetchall()
+    latest: dict[str, dict] = {}
+    for row in rows:
+        latest[row["run_id"]] = _disposal_row(row)
+    return latest
+
+
+def list_disposals(limit: int = 100) -> list[dict]:
+    with _LOCK, _connect() as conn:
+        rows = conn.execute(
+            """SELECT disposal_id, cleanup_key, attempt, run_id, version_seq, action,
+                      reasons_json, size_bytes, created_at, restored_at
+               FROM disposals
+               ORDER BY created_at DESC, cleanup_key, attempt, version_seq LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [_disposal_row(row) for row in rows]
+
+
+def count_disposals() -> int:
+    with _LOCK, _connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM disposals").fetchone()
+    return int(row["n"])
+
+
+def list_archives() -> list[dict]:
+    with _LOCK, _connect() as conn:
+        rows = conn.execute(
+            """SELECT run_id, cleanup_key, version_seq, size_bytes, archived_at
+               FROM archives ORDER BY version_seq, run_id"""
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def count_archives() -> int:
+    with _LOCK, _connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS n FROM archives").fetchone()
+    return int(row["n"])
+
+
+def load_archive(run_id: str) -> dict | None:
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM archives WHERE run_id=?", (run_id,)
+        ).fetchone()
+    return _loads(row["payload_json"]) if row else None
+
+
+def _disposal_row(row) -> dict:
+    return {
+        "disposal_id": row["disposal_id"],
+        "cleanup_key": row["cleanup_key"],
+        "attempt": int(row["attempt"]),
+        "run_id": row["run_id"],
+        "version_seq": int(row["version_seq"]),
+        "action": row["action"],
+        "reasons": _loads(row["reasons_json"]) or [],
+        "size_bytes": int(row["size_bytes"]),
+        "created_at": row["created_at"],
+        "restored_at": row["restored_at"],
+    }

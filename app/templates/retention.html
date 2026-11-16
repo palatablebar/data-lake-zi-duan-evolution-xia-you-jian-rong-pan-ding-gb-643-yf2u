@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}版本处置 · fieldmap{% endblock %}
+{% block body %}
+<section class="doc-section">
+  <h1>版本处置</h1>
+  {% if plan %}
+  <p class="lede">在册版本 <span class="mono">{{ plan.summary.total }}</span>　可归档 <span class="mono">{{ plan.summary.archivable }}</span>　保留 <span class="mono">{{ plan.summary.retained }}</span>　可释放 <span class="mono">{{ plan.summary.reclaimable_bytes }}</span> 字节</p>
+  <div class="actions">
+    <button type="button" data-action="cleanup">执行清理</button>
+    <a class="btn ghost" href="/api/export/disposal.csv">导出处置清单 CSV</a>
+    <a class="btn ghost" href="/api/retention/plan">清单 JSON</a>
+    <span class="flash" data-flash></span>
+  </div>
+
+  <div class="wrap-scroll">
+    <table>
+      <caption>处置清单<sup class="fn">1</sup></caption>
+      <thead>
+        <tr>
+          <th>批次</th><th class="num">序号</th><th>版本</th><th>生效止</th>
+          <th>动作</th><th>原因</th><th class="num">断链</th><th class="num">字节</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in plan['items'] %}
+        <tr>
+          <td class="name">{{ item.run_id }}</td>
+          <td class="num">{{ item.version_seq }}</td>
+          <td class="name">{{ item.version_label_old }} → {{ item.version_label_new }}</td>
+          <td class="name">{{ item.effective_to|day }}</td>
+          <td>{% if item.action == 'archived' %}<span class="st st-ok">归档</span>{% else %}<span class="st st-warn">保留</span>{% endif %}</td>
+          <td class="reason">
+            {% for code in item.reasons %}<span class="code st-{{ code|sev }}">{{ code|reason }}</span>{% if not loop.last %}、{% endif %}{% endfor %}
+          </td>
+          <td class="num">{{ item.blockers|length }}</td>
+          <td class="num">{{ item.size_bytes }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有批次，先在版本历史页跑一次。</p>
+  {% endif %}
+</section>
+
+{% if plan %}
+<section class="doc-section">
+  <h2><span class="clause">2</span>影响面 · 断链阻塞</h2>
+  {% set blocked = plan['items']|selectattr('blockers')|list %}
+  {% if blocked %}
+  <p class="lede">以下版本仍被未完成迁移引用，容量告急也不动记录数据<sup class="fn">2</sup></p>
+  <div class="wrap-scroll">
+    <table>
+      <thead>
+        <tr><th>批次</th><th>下游节点</th><th>类型</th><th>断链引用</th></tr>
+      </thead>
+      <tbody>
+        {% for item in blocked %}
+        {% for ref in item.blockers %}
+        <tr>
+          <td class="name">{{ item.run_id }}</td>
+          <td class="name">{{ ref.consumer }}</td>
+          <td class="name">{{ ref.kind }}</td>
+          <td class="name">{{ ref.ref }}</td>
+        </tr>
+        {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">没有断链阻塞。</p>
+  {% endif %}
+</section>
+
+<section class="doc-section">
+  <h2><span class="clause">3</span>归档恢复</h2>
+  {% if archives %}
+  <div class="wrap-scroll">
+    <table>
+      <thead>
+        <tr><th>批次</th><th class="num">序号</th><th class="num">字节</th><th>归档时间</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for item in archives %}
+        <tr>
+          <td class="name">{{ item.run_id }}</td>
+          <td class="num">{{ item.version_seq }}</td>
+          <td class="num">{{ item.size_bytes }}</td>
+          <td class="name">{{ item.archived_at|ts }}</td>
+          <td><button type="button" class="ghost" data-action="restore" data-run-id="{{ item.run_id }}">恢复</button></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">归档表是空的。</p>
+  {% endif %}
+</section>
+
+<section class="doc-section">
+  <h2><span class="clause">4</span>处置记录</h2>
+  {% if disposals %}
+  <div class="wrap-scroll">
+    <table>
+      <caption>同一清理重跑不新增记录<sup class="fn">3</sup></caption>
+      <thead>
+        <tr>
+          <th>清理</th><th class="num">轮次</th><th>批次</th><th>动作</th><th>原因</th><th>时间</th><th>恢复</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in disposals %}
+        <tr>
+          <td class="name">{{ item.cleanup_key[:8] }}…</td>
+          <td class="num">{{ item.attempt }}</td>
+          <td class="name">{{ item.run_id }}</td>
+          <td>{% if item.action == 'archived' %}<span class="st st-ok">归档</span>{% else %}<span class="st st-warn">保留</span>{% endif %}</td>
+          <td class="reason">
+            {% for code in item.reasons %}<span class="code st-{{ code|sev }}">{{ code|reason }}</span>{% if not loop.last %}、{% endif %}{% endfor %}
+          </td>
+          <td class="name">{{ item.created_at|ts }}</td>
+          <td class="name">{{ item.restored_at|ts }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">还没有处置记录。</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<aside class="notes">
+  <ol class="footnotes">
+    <li>保留优先于容量：命中任一保留原因的版本不进归档。<a class="back" href="#main">↩</a></li>
+    <li>断链阻塞与影响面页、引用账 CSV 同源，结论一致。<a class="back" href="#main">↩</a></li>
+    <li>清理键是结论摘要，重跑命中已有处置直接复用；归档失败整体回滚，可恢复重试。<a class="back" href="#main">↩</a></li>
+  </ol>
+</aside>
+{% endblock %}

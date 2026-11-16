@@ -11,6 +11,7 @@
 - 影响面 = 引用身份解析后的反向闭包，附环、自引用、断链、单边登记。
 - 批次幂等：同一输入命中批次键不再新增行；基线落后的提交返回 409。
 - 迁移单 Markdown + 字段账、引用账、账目、运行清单四份导出。
+- 版本处置：保留判定（基线 / 区间未闭 / 断链 / 账不平）优先于容量，清理幂等，归档失败整体回滚，归档可恢复。
 
 ## 模块
 
@@ -23,6 +24,7 @@
 | M5 影响面 | 闭包、环、断链、单边 | `GET /api/impact`、`/impact` |
 | M6 版本批次 | 跑批次、历史、陈旧拒绝 | `POST /api/runs`、`/batches` |
 | M7 迁移单 | 条款号、账目导出 | `GET /api/export/spec.md`、`/spec` |
+| M8 版本处置 | 保留判定、幂等清理、归档恢复 | `POST /api/retention/cleanup`、`/retention` |
 
 ## 核心规则
 
@@ -53,10 +55,11 @@ curl -s localhost:18202/api/health
 4. `/impact` 影响面：受影响节点 4 个、1 个环、1 个自引用、2 处断链、2 处单边。
 5. `/batches` 版本历史：四账并列；「陈旧提交」验证 409。
 6. `/spec` 迁移单：6 条破坏条款，导出 Markdown 与三份 CSV。
+7. `/retention` 版本处置：种子批次因「基线 + 区间未闭 + 断链」三重原因保留；执行清理只记一条处置，重跑命中复用不新增。
 
 ## 页面
 
-`/`、`/types`、`/mapping`、`/impact`、`/batches`、`/spec`，另有 `/docs` 作为接口说明。
+`/`、`/types`、`/mapping`、`/impact`、`/batches`、`/retention`、`/spec`，另有 `/docs` 作为接口说明。
 
 ## 目录
 
@@ -67,7 +70,7 @@ app/templates/      base + 6 页
 app/static/         theme / layout / components + app / table / footnote
 docs/               DEPTH、DATA-DICTIONARY、RUNBOOK
 sample_data/        5 个样例，含一个 GB18030 + CRLF + 标记的脏件
-tests/              conftest、7 个模块测试、e2e、不变量、fixtures
+tests/              conftest、8 个模块测试、e2e、不变量、fixtures
 ```
 
 ## 测试

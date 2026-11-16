@@ -24,6 +24,7 @@ docker compose exec -T app python -m pytest -q
 4. `/impact` 看受影响节点、环、断链、单边登记。
 5. `/batches` 点「跑一次」，再点「陈旧提交」验证 409。
 6. `/spec` 导出迁移单与三份账目 CSV。
+7. `/retention` 看处置清单，点「执行清理」；再点一次验证幂等复用。
 
 ## 4 重建数据库
 
@@ -55,6 +56,11 @@ docker compose up -d --build
 | GET | `/api/export/refs.csv` | 引用账 CSV |
 | GET | `/api/export/ledger.csv` | 账目 CSV |
 | GET | `/api/export/manifest.json` | 运行清单 |
+| GET | `/api/retention/plan` | 处置清单：逐版本归档 / 保留结论与原因 |
+| POST | `/api/retention/cleanup` | 执行清理，可带 `pressure`、`note`；同一清理重跑复用 |
+| POST | `/api/retention/restore` | 按 `run_id` 把归档版本恢复到活动表 |
+| GET | `/api/retention/disposals` | 处置记录与归档清单 |
+| GET | `/api/export/disposal.csv` | 处置清单 CSV，与 plan 同一结论 |
 
 ## 6 失败处置
 
@@ -64,6 +70,8 @@ docker compose up -d --build
 | 400 `WINDOW_INVERTED` | 生效区间起点不早于终点 | 检查 `effective_from` / `effective_to` |
 | 400 `BAD_INPUT` | 文件名、参数或 JSON 结构不对 | 看返回的 `detail` |
 | 404 `NOT_FOUND` | 还没跑过批次 | 先在 `/batches` 点「跑一次」 |
+| 409 `ARCHIVE_CONFLICT` | 归档写入冲突，事务已整体回滚 | 版本数据未动，排除冲突后重跑清理 |
+| 409 `ALREADY_ACTIVE` | 恢复的版本仍在活动表 | 无需恢复，核对 `run_id` |
 
 ## 7 端口与并发
 

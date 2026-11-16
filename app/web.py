@@ -23,6 +23,7 @@ NAV = [
     {"slug": "mapping", "href": "/mapping", "label": "字段映射"},
     {"slug": "impact", "href": "/impact", "label": "影响面"},
     {"slug": "batches", "href": "/batches", "label": "版本历史"},
+    {"slug": "retention", "href": "/retention", "label": "版本处置"},
     {"slug": "spec", "href": "/spec", "label": "迁移单"},
 ]
 

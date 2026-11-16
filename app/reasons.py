@@ -49,6 +49,15 @@ CODES: dict[str, tuple[str, str]] = {
     "VERSION_APPLIED": ("版本已登记", "info"),
     "RUN_REUSED": ("同一输入命中已算批次", "info"),
     "WINDOW_INVERTED": ("生效区间起点不早于终点", "break"),
+    # 版本处置
+    "RETAIN_HEAD": ("当前基线版本，保留", "info"),
+    "RETAIN_WINDOW_OPEN": ("生效区间未关闭，保留", "info"),
+    "RETAIN_REFS_BROKEN": ("迁移未完成，仍有断链引用", "warn"),
+    "RETAIN_UNBALANCED": ("账目未摆平，保留待审计", "warn"),
+    "ARCHIVE_OK": ("无保留原因，可归档", "info"),
+    "ARCHIVE_CONFLICT": ("归档写入冲突，已整体回滚", "break"),
+    "CLEANUP_REUSED": ("同一清理命中已有处置", "info"),
+    "ARCHIVE_RESTORED": ("版本已从归档恢复", "info"),
     # 结论
     "COMPATIBLE": ("兼容", "info"),
     "COMPATIBLE_BY_MAPPING": ("加别名后兼容", "warn"),
